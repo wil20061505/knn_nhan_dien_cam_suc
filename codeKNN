@@ -1,0 +1,46 @@
+import sys
+import pandas as pd
+
+sys.stdout.reconfigure(encoding='utf-8')
+df = pd.read_excel("data_set.xlsx")
+df = df.dropna()
+df['text'] = df['text'].astype(str)
+df = df[df['text'].str.strip() != ""]
+
+X = df['text']
+y = df['label']   # 0: tiêu cực, 1: bình thường, 2: tích cực
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+vectorizer = TfidfVectorizer(ngram_range=(1,2), max_features=5000)
+
+X_vec = vectorizer.fit_transform(X)
+
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(
+    X_vec, y, test_size=0.2, random_state=42
+)
+
+from sklearn.linear_model import LogisticRegression
+model = LogisticRegression(max_iter=1000)
+
+model.fit(X_train, y_train)
+
+from sklearn.metrics import accuracy_score
+y_pred = model.predict(X_test)
+print("Accuracy:", accuracy_score(y_test, y_pred))
+
+while True:
+    new_text = input("\nNhập câu để dự đoán (gõ 'exit' để thoát): ")
+    
+    if new_text.lower() == 'exit':
+        break
+    
+    new_vec = vectorizer.transform([new_text])
+    result = model.predict(new_vec)[0]
+
+    if result == 0:
+        print("👉 Tiêu cực 😡")
+    elif result == 1:
+        print("👉 Bình thường 😐")
+    else:
+        print("👉 Tích cực 😍")
