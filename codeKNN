@@ -416,13 +416,13 @@ while True:
 
     if result==0:
         print(
-            "👉 Tiêu cực 😡"
+            "Tiêu cực"
         )
     elif result==1:
         print(
-            "👉 Bình thường 😐"
+            "Bình thường"
         )
     else:
         print(
-            "👉 Tích cực 😍"
+            "Tích cực"
         )
