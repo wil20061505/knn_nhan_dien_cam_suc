@@ -1,34 +1,47 @@
 import sys
 import pandas as pd
 
+# Fix lỗi tiếng Việt
 sys.stdout.reconfigure(encoding='utf-8')
+
+# 1. Đọc dữ liệu
 df = pd.read_excel("data_set.xlsx")
+
+# 2. Làm sạch
 df = df.dropna()
 df['text'] = df['text'].astype(str)
 df = df[df['text'].str.strip() != ""]
 
+# 3. X, y
 X = df['text']
 y = df['label']   # 0: tiêu cực, 1: bình thường, 2: tích cực
 
+# 4. Vector hóa văn bản
 from sklearn.feature_extraction.text import TfidfVectorizer
 vectorizer = TfidfVectorizer(ngram_range=(1,2), max_features=5000)
 
 X_vec = vectorizer.fit_transform(X)
 
+# 5. Chia dữ liệu
 from sklearn.model_selection import train_test_split
 X_train, X_test, y_train, y_test = train_test_split(
     X_vec, y, test_size=0.2, random_state=42
 )
 
-from sklearn.linear_model import LogisticRegression
-model = LogisticRegression(max_iter=1000)
+# 6. KNN model
+from sklearn.neighbors import KNeighborsClassifier
+
+model = KNeighborsClassifier(n_neighbors=5)  # bạn có thể thử 3,5,7
 
 model.fit(X_train, y_train)
 
+# 7. Đánh giá
 from sklearn.metrics import accuracy_score
 y_pred = model.predict(X_test)
+
 print("Accuracy:", accuracy_score(y_test, y_pred))
 
+# 8. Test realtime
 while True:
     new_text = input("\nNhập câu để dự đoán (gõ 'exit' để thoát): ")
     
@@ -38,6 +51,7 @@ while True:
     new_vec = vectorizer.transform([new_text])
     result = model.predict(new_vec)[0]
 
+    # 9. Hiển thị kết quả
     if result == 0:
         print("👉 Tiêu cực 😡")
     elif result == 1:
