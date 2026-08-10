@@ -1,0 +1,428 @@
+import pandas as pd
+import re
+import random
+import math
+from collections import Counter
+# ======================================================
+# 1. LOAD DATA
+# ======================================================
+df = pd.read_excel(
+    "data/comments.xlsx"
+)
+df = df.dropna()
+df["text"] = df["text"].astype(str)
+df = df[
+    df["text"].str.strip() != ""
+]
+# ======================================================
+# 2. CLEAN TEXT
+# ======================================================
+def clean_text(text):
+    text = text.lower()
+    # remove url
+    text = re.sub(
+        r"http\S+",
+        "",
+        text
+    )
+    # giữ tiếng Việt + số
+    text = re.sub(
+        r"[^a-zA-ZÀ-Ỵà-ỵ0-9\s]",
+        "",
+        text
+    )
+    # remove space dư
+    text = re.sub(
+        r"\s+",
+        " ",
+        text
+    )
+    return text.strip()
+df["text"] = df["text"].apply(
+    clean_text
+)
+# chuyển sang list
+X = df["text"].tolist()
+y = df["label"].tolist()
+# ======================================================
+# 3. TRAIN TEST SPLIT
+# ======================================================
+def train_test_split_custom(
+        X,
+        y,
+        test_size=0.2,
+        random_state=42,
+        stratify=None
+):
+    random.seed(
+        random_state
+    )
+    train_idx = []
+    test_idx = []
+    if stratify is not None:
+        groups = {}
+        for i,label in enumerate(stratify):
+            if label not in groups:
+                groups[label] = []
+            groups[label].append(i)
+        for label,idx in groups.items():
+            random.shuffle(idx)
+            test_count = math.ceil(
+                len(idx)*test_size
+            )
+            test_idx.extend(
+                idx[:test_count]
+            )
+            train_idx.extend(
+                idx[test_count:]
+            )
+    else:
+        idx = list(
+            range(len(X))
+        )
+        random.shuffle(idx)
+        test_count = math.ceil(
+            len(X)*test_size
+        )
+        test_idx = idx[:test_count]
+        train_idx = idx[test_count:]
+    X_train = [
+        X[i]
+        for i in train_idx
+    ]
+    X_test = [
+        X[i]
+        for i in test_idx
+    ]
+    y_train = [
+        y[i]
+        for i in train_idx
+    ]
+    y_test = [
+        y[i]
+        for i in test_idx
+    ]
+    return (
+        X_train,
+        X_test,
+        y_train,
+        y_test
+    )
+X_train_text, X_test_text, y_train, y_test = train_test_split_custom(
+    X,
+    y,
+    test_size=0.2,
+    random_state=42,
+    stratify=y
+)
+# ======================================================
+# 4. TF-IDF
+# ======================================================
+class MyTfidfVectorizer:
+    def __init__(
+            self,
+            ngram_range=(1,2),
+            max_features=5000
+    ):
+        self.ngram_range = ngram_range
+        self.max_features = max_features
+    def create_ngrams(
+            self,
+            words
+    ):
+        result=[]
+        min_n,max_n = self.ngram_range
+        for n in range(
+            min_n,
+            max_n+1
+        ):
+            for i in range(
+                len(words)-n+1
+            ):
+                gram=" ".join(
+                    words[i:i+n]
+                )
+                result.append(
+                    gram
+                )
+        return result
+    def fit(
+            self,
+            documents
+    ):
+        df_count = Counter()
+        for doc in documents:
+            words = doc.split()
+            grams = self.create_ngrams(
+                words
+            )
+            for gram in set(grams):
+                df_count[gram]+=1
+        # chọn feature nhiều nhất
+        features = sorted(
+            df_count.items(),
+            key=lambda x:x[1],
+            reverse=True
+        )
+        self.vocabulary = {
+            word:i
+            for i,(word,count)
+            in enumerate(
+                features[:self.max_features]
+            )
+        }
+        N = len(documents)
+        self.idf = {}
+        for word in self.vocabulary:
+            self.idf[word] = (
+                math.log(
+                    (N+1) /
+                    (df_count[word]+1)
+                )
+                +1
+            )
+        return self
+    def transform(
+            self,
+            documents
+    ):
+        vectors=[]
+        for doc in documents:
+            words = doc.split()
+            grams = self.create_ngrams(
+                words
+            )
+            tf = Counter(
+                grams
+            )
+            vector=[
+                0
+            ] * len(
+                self.vocabulary
+            )
+            for word,count in tf.items():
+                if word in self.vocabulary:
+                    index = self.vocabulary[word]
+                    vector[index] = (
+                        count *
+                        self.idf[word]
+                    )
+            # L2 normalization
+            norm = math.sqrt(
+                sum(
+                    x*x
+                    for x in vector
+                )
+            )
+            if norm != 0:
+                vector=[
+                    x/norm
+                    for x in vector
+                ]
+            vectors.append(
+                vector
+            )
+        return vectors
+    def fit_transform(
+            self,
+            documents
+    ):
+        self.fit(
+            documents
+        )
+        return self.transform(
+            documents
+        )
+vectorizer = MyTfidfVectorizer(
+    ngram_range=(1,2),
+    max_features=5000
+)
+X_train = vectorizer.fit_transform(
+    X_train_text
+)
+X_test = vectorizer.transform(
+    X_test_text
+)
+# ======================================================
+# 5. KNN
+# ======================================================
+class MyKNNClassifier:
+    def __init__(
+            self,
+            n_neighbors=5
+    ):
+        self.k=n_neighbors
+    def cosine_similarity(
+            self,
+            a,
+            b
+    ):
+        return sum(
+            x*y
+            for x,y in zip(a,b)
+        )
+    def fit(
+            self,
+            X_train,
+            y_train
+    ):
+        self.X_train=X_train
+        self.y_train=y_train
+        return self
+    def predict(
+            self,
+            X_test
+    ):
+        predictions=[]
+        for test in X_test:
+            scores=[]
+            for train,label in zip(
+                self.X_train,
+                self.y_train
+            ):
+                sim=self.cosine_similarity(
+                    test,
+                    train
+                )
+                scores.append(
+                    (
+                        sim,
+                        label
+                    )
+                )
+            scores.sort(
+                key=lambda x:x[0],
+                reverse=True
+            )
+            neighbors=scores[:self.k]
+            labels=[
+                label
+                for _,label
+                in neighbors
+            ]
+            prediction=Counter(
+                labels
+            ).most_common(1)[0][0]
+            predictions.append(
+                prediction
+            )
+        return predictions
+knn=MyKNNClassifier(
+    n_neighbors=5
+)
+knn.fit(
+    X_train,
+    y_train
+)
+y_pred=knn.predict(
+    X_test
+)
+# ======================================================
+# 6. EVALUATION
+# ======================================================
+def accuracy_score(
+        y_true,
+        y_pred
+):
+    correct=sum(
+        1
+        for a,b
+        in zip(
+            y_true,
+            y_pred
+        )
+        if a==b
+    )
+    return correct/len(y_true)
+print(
+    "Accuracy:",
+    accuracy_score(
+        y_test,
+        y_pred
+    )
+)
+def classification_report(
+        y_true,
+        y_pred
+):
+    classes=sorted(
+        set(y_true)
+    )
+    print(
+        "\nClass Precision Recall F1 Support"
+    )
+    for c in classes:
+        TP=FP=FN=0
+        for true,pred in zip(
+            y_true,
+            y_pred
+        ):
+            if true==c and pred==c:
+                TP+=1
+            elif true!=c and pred==c:
+
+                FP+=1
+            elif true==c and pred!=c:
+
+                FN+=1
+        precision = (
+            TP/(TP+FP)
+            if TP+FP else 0
+        )
+        recall = (
+            TP/(TP+FN)
+            if TP+FN else 0
+        )
+        f1 = (
+            2*precision*recall/
+            (precision+recall)
+            if precision+recall
+            else 0
+        )
+        support=sum(
+            1
+            for x in y_true
+            if x==c
+        )
+        print(
+            c,
+            round(precision,3),
+            round(recall,3),
+            round(f1,3),
+            support
+        )
+classification_report(
+    y_test,
+    y_pred
+)
+# ======================================================
+# 7. PREDICT NEW COMMENT
+# ======================================================
+while True:
+    text=input(
+        "\nNhập comment (exit để thoát): "
+    )
+    if text.lower()=="exit":
+        break
+    text=clean_text(
+        text
+    )
+    vec=vectorizer.transform(
+        [text]
+    )
+    result=knn.predict(
+        vec
+    )[0]
+
+    if result==0:
+        print(
+            "👉 Tiêu cực 😡"
+        )
+    elif result==1:
+        print(
+            "👉 Bình thường 😐"
+        )
+    else:
+        print(
+            "👉 Tích cực 😍"
+        )
