@@ -2,72 +2,145 @@ import pandas as pd
 import re
 import random
 import math
+import os
 from collections import Counter
+
 # ======================================================
 # 1. LOAD DATA
 # ======================================================
+# Dùng đường dẫn tuyệt đối dựa trên vị trí của chính file script này,
+# để không bị lỗi FileNotFoundError khi chạy từ thư mục khác
+# (VD: chạy từ D:\knn\venv thay vì D:\knn\...).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_PATH = os.path.join(BASE_DIR, "data_3.xlsx")
+
+if not os.path.exists(DATA_PATH):
+    raise FileNotFoundError(
+        f"Không tìm thấy file dữ liệu tại: {DATA_PATH}\n"
+        f"-> Hãy đặt file Excel cùng thư mục với script này và đặt tên "
+        f"đúng là 'data._.xlsx' (hoặc sửa lại DATA_PATH ở trên cho đúng "
+        f"tên/đường dẫn file bạn đang có)."
+    )
+
 df = pd.read_excel(
-    "data/comments.xlsx"
+    DATA_PATH
 )
 df = df.dropna()
 df["text"] = df["text"].astype(str)
 df = df[
     df["text"].str.strip() != ""
 ]
+
 # ======================================================
-# 2. CLEAN TEXT
+# 2. TỪ ĐIỂN VIẾT TẮT / TEENCODE
 # ======================================================
+# Dùng để chuẩn hoá các từ viết tắt, teencode về từ gốc
+# trước khi xử lý phủ định và tách n-gram.
+ABBREV_DICT = {
+    "ko": "không", "k": "không", "kh": "không",
+    "đéo": "không", "đếch": "không", "méo": "không",
+    "đc": "được", "dc": "được",
+    "cl": "tệ", "vl": "rất", "vcl": "rất",
+    "qq": "tệ", "vcc": "vãi",
+    "dm": "địt mẹ", "dmm": "địt mẹ",
+    "dcm": "địt mẹ mày", "sv": "súc vật",
+    "svat": "súc vật",
+    "vid": "video", "ch": "chưa", "bt": "biết",
+    "cx": "cũng", "ms": "mới", "mik": "mình",
+    "mk": "mình", "bn": "bạn", "qa": "quá",
+    "j": "gì", "ntn": "như thế nào", "ad": "admin",
+    "z": "vậy", "vs": "với", "h": "giờ", "t": "tôi",
+    "r": "rồi", "ae": "anh em", "mn": "mọi người",
+    "éo": "không"
+}
+
+
+def expand_abbreviations(text):
+    """Thay thế từng từ viết tắt/teencode bằng từ đầy đủ.
+    Áp dụng match theo từng token (word-level) để tránh thay
+    nhầm bên trong các từ dài hơn."""
+    words = text.split()
+    result = []
+    for w in words:
+        if w in ABBREV_DICT:
+            # một số giá trị thay thế có nhiều từ (vd: "địt mẹ")
+            result.extend(ABBREV_DICT[w].split())
+        else:
+            result.append(w)
+    return " ".join(result)
+
+
+# ======================================================
+# 3. CLEAN TEXT
+# ======================================================
+# BUG FIX: "dở " và "tệ " có khoảng trắng thừa ở cuối nên sau khi
+# text.split() không bao giờ khớp được với từ đơn -> đã bỏ khoảng trắng.
+NEGATIVE_WORDS = [
+    "không", "chẳng", "chưa", "chả", "dở", "tệ", "đừng", "chớ"
+]
+
+# BUG FIX: "hài lòng" là cụm 2 từ nhưng so sánh cũ dùng
+# `words[i+1] in sentiment_words` (so sánh với 1 từ) nên không bao giờ
+# match được. Hàm handle_negation bên dưới đã hỗ trợ cụm nhiều từ.
+SENTIMENT_WORDS = [
+    "tốt", "hay", "ngon", "đẹp", "thích", "ổn", "chất lượng",
+    "hài lòng", "tuyệt vời", "xuất sắc", "ưng ý"
+]
+# Sắp xếp theo số từ giảm dần để ưu tiên khớp cụm dài trước (longest match)
+SENTIMENT_WORDS_SORTED = sorted(
+    SENTIMENT_WORDS,
+    key=lambda s: len(s.split()),
+    reverse=True
+)
+
+
 def handle_negation(text):
-    negative_words = [
-        "không",
-        "chẳng",
-        "chưa",
-        "chả",
-        "dở ",
-        "tệ "
-    ]
-    sentiment_words = [
-        "tốt",
-        "hay",
-        "ngon",
-        "đẹp",
-        "thích",
-        "hài lòng",
-    ]
-    words=text.split()
-    result=[]
-    i=0
-    while i<len(words):
-        if (
-            words[i] in negative_words
-            and i+1<len(words)
-            and words[i+1] in sentiment_words
-        ):
-            result.append(
-                words[i]+"_"+words[i+1]
-            )
-            i+=2
+    words = text.split()
+    result = []
+    i = 0
+    n = len(words)
+    while i < n:
+        if words[i] in NEGATIVE_WORDS:
+            matched = False
+            # thử khớp cụm dài nhất trước (longest match first)
+            for phrase in SENTIMENT_WORDS_SORTED:
+                phrase_words = phrase.split()
+                plen = len(phrase_words)
+                if (
+                    i + plen < n + 1
+                    and words[i + 1:i + 1 + plen] == phrase_words
+                ):
+                    result.append(
+                        words[i] + "_" + "_".join(phrase_words)
+                    )
+                    i += 1 + plen
+                    matched = True
+                    break
+            if not matched:
+                result.append(words[i])
+                i += 1
         else:
             result.append(words[i])
-            i+=1
+            i += 1
     return " ".join(result)
+
+
 def clean_text(text):
     text = str(text)
     # lowercase
     text = text.lower()
     # emoji
     emoji_map = {
-        "😀":"emoji_vui",
-        "😂":"emoji_cuoi",
-        "😍":"emoji_yeu_thich",
-        "❤️":"emoji_tim",
-        "😡":"emoji_tuc_gian",
-        "😭":"emoji_buon",
-        "👍":"emoji_thich",
-        "👎":"emoji_khong_thich"
+        "😀": "emoji_vui",
+        "😂": "emoji_cuoi",
+        "😍": "emoji_yeu_thich",
+        "❤️": "emoji_tim",
+        "😡": "emoji_tuc_gian",
+        "😭": "emoji_buon",
+        "👍": "emoji_thich",
+        "👎": "emoji_khong_thich"
     }
     for e, replace in emoji_map.items():
-
         text = text.replace(
             e,
             " " + replace + " "
@@ -91,17 +164,25 @@ def clean_text(text):
         text
     )
     text = text.strip()
+    # NEW: chuẩn hoá viết tắt / teencode trước khi xử lý phủ định
+    text = expand_abbreviations(text)
     # xử lý phủ định
     text = handle_negation(text)
     return text
+
+
 df["text"] = df["text"].apply(
     clean_text
 )
+# loại bỏ các dòng rỗng sau khi clean (BUG FIX: tránh chia cho 0 ở TF-IDF)
+df = df[df["text"].str.strip() != ""]
+
 # chuyển sang list
 X = df["text"].tolist()
 y = df["label"].tolist()
+
 # ======================================================
-# 3. TRAIN TEST SPLIT
+# 4. TRAIN TEST SPLIT
 # ======================================================
 def train_test_split_custom(
         X,
@@ -117,14 +198,14 @@ def train_test_split_custom(
     test_idx = []
     if stratify is not None:
         groups = {}
-        for i,label in enumerate(stratify):
+        for i, label in enumerate(stratify):
             if label not in groups:
                 groups[label] = []
             groups[label].append(i)
-        for label,idx in groups.items():
+        for label, idx in groups.items():
             random.shuffle(idx)
             test_count = math.ceil(
-                len(idx)*test_size
+                len(idx) * test_size
             )
             test_idx.extend(
                 idx[:test_count]
@@ -138,12 +219,12 @@ def train_test_split_custom(
         )
         random.shuffle(idx)
         test_count = math.ceil(
-            len(X)*test_size
+            len(X) * test_size
         )
         test_idx = idx[:test_count]
         train_idx = idx[test_count:]
-        random.shuffle(train_idx)
-        random.shuffle(test_idx)
+    random.shuffle(train_idx)
+    random.shuffle(test_idx)
     X_train = [
         X[i]
         for i in train_idx
@@ -166,6 +247,8 @@ def train_test_split_custom(
         y_train,
         y_test
     )
+
+
 X_train_text, X_test_text, y_train, y_test = train_test_split_custom(
     X,
     y,
@@ -173,37 +256,43 @@ X_train_text, X_test_text, y_train, y_test = train_test_split_custom(
     random_state=42,
     stratify=y
 )
+
+
 # ======================================================
-# 4. TF-IDF
+# 5. TF-IDF
 # ======================================================
 class MyTfidfVectorizer:
     def __init__(
             self,
-            ngram_range=(1,2),
+            ngram_range=(1, 2),
             max_features=300,
     ):
         self.ngram_range = ngram_range
         self.max_features = max_features
+        self.vocabulary = {}
+        self.idf = {}
+
     def create_ngrams(
             self,
             words
     ):
-        result=[]
-        min_n,max_n = self.ngram_range
+        result = []
+        min_n, max_n = self.ngram_range
         for n in range(
             min_n,
-            max_n+1
+            max_n + 1
         ):
             for i in range(
-                len(words)-n+1
+                len(words) - n + 1
             ):
-                gram=" ".join(
-                    words[i:i+n]
+                gram = " ".join(
+                    words[i:i + n]
                 )
                 result.append(
                     gram
                 )
         return result
+
     def fit(
             self,
             documents
@@ -215,16 +304,16 @@ class MyTfidfVectorizer:
                 words
             )
             for gram in set(grams):
-                df_count[gram]+=1
+                df_count[gram] += 1
         # chọn feature nhiều nhất
         features = sorted(
             df_count.items(),
-            key=lambda x:x[1],
+            key=lambda x: x[1],
             reverse=True
         )
         self.vocabulary = {
-            word:i
-            for i,(word,count)
+            word: i
+            for i, (word, count)
             in enumerate(
                 features[:self.max_features]
             )
@@ -234,53 +323,57 @@ class MyTfidfVectorizer:
         for word in self.vocabulary:
             self.idf[word] = (
                 math.log(
-                    (N+1) /
-                    (df_count[word]+1)
+                    (N + 1) /
+                    (df_count[word] + 1)
                 )
-                +1
+                + 1
             )
         return self
+
     def transform(
             self,
             documents
     ):
-        vectors=[]
+        vectors = []
         for doc in documents:
             words = doc.split()
+            # BUG FIX: tránh chia cho 0 khi doc rỗng sau khi clean
+            n_words = len(words) if words else 1
             grams = self.create_ngrams(
                 words
             )
-            tf = Counter(
+            term_counts = Counter(
                 grams
             )
-            vector=[
+            vector = [
                 0
             ] * len(
                 self.vocabulary
             )
-            for word,count in tf.items():
+            for word, count in term_counts.items():
                 if word in self.vocabulary:
                     index = self.vocabulary[word]
-                    tf = count / len(words)
+                    tf = count / n_words
                     vector[index] = (
                             tf * self.idf[word]
                     )
             # L2 normalization
             norm = math.sqrt(
                 sum(
-                    x*x
+                    x * x
                     for x in vector
                 )
             )
             if norm != 0:
-                vector=[
-                    x/norm
+                vector = [
+                    x / norm
                     for x in vector
                 ]
             vectors.append(
                 vector
             )
         return vectors
+
     def fit_transform(
             self,
             documents
@@ -291,8 +384,10 @@ class MyTfidfVectorizer:
         return self.transform(
             documents
         )
+
+
 vectorizer = MyTfidfVectorizer(
-    ngram_range=(1,2),
+    ngram_range=(1, 2),
     max_features=900
 )
 X_train = vectorizer.fit_transform(
@@ -301,8 +396,10 @@ X_train = vectorizer.fit_transform(
 X_test = vectorizer.transform(
     X_test_text
 )
+
+
 # ======================================================
-# 5. KNN
+# 6. KNN
 # ======================================================
 class MyKNNClassifier:
 
@@ -311,15 +408,19 @@ class MyKNNClassifier:
         n_neighbors=5
     ):
         self.k = n_neighbors
+        self.X_train = []
+        self.y_train = []
+
     def cosine_similarity(
         self,
         a,
         b
     ):
         return sum(
-            x*y
-            for x,y in zip(a,b)
+            x * y
+            for x, y in zip(a, b)
         )
+
     def fit(
         self,
         X_train,
@@ -328,6 +429,7 @@ class MyKNNClassifier:
         self.X_train = X_train
         self.y_train = y_train
         return self
+
     def predict(
         self,
         X_test
@@ -336,7 +438,7 @@ class MyKNNClassifier:
         for test in X_test:
             scores = []
             # tính similarity với toàn bộ train data
-            for train,label in zip(
+            for train, label in zip(
                 self.X_train,
                 self.y_train
             ):
@@ -352,7 +454,7 @@ class MyKNNClassifier:
                 )
             # sắp xếp giảm dần theo similarity
             scores.sort(
-                key=lambda x:x[0],
+                key=lambda x: x[0],
                 reverse=True
             )
             # lấy K hàng xóm gần nhất
@@ -360,47 +462,55 @@ class MyKNNClassifier:
             # ===========================
             # Weighted voting
             # ===========================
-            votes = {}
-            for sim,label in neighbors:
+            votes: dict = {}
+            for sim, label in neighbors:
                 if label not in votes:
                     votes[label] = 0
                 votes[label] += sim
             # chọn label có tổng trọng số lớn nhất
+            # (dùng lambda thay vì votes.get để tránh Pylance
+            # không suy luận được overload của dict.get)
             prediction = max(
                 votes,
-                key=votes.get
+                key=lambda lbl: votes[lbl]
             )
             predictions.append(
                 prediction
             )
         return predictions
-knn=MyKNNClassifier(
+
+
+knn = MyKNNClassifier(
     n_neighbors=9
 )
 knn.fit(
     X_train,
     y_train
 )
-y_pred=knn.predict(
+y_pred = knn.predict(
     X_test
 )
+
+
 # ======================================================
-# 6. EVALUATION
+# 7. EVALUATION
 # ======================================================
 def accuracy_score(
         y_true,
         y_pred
 ):
-    correct=sum(
+    correct = sum(
         1
-        for a,b
+        for a, b
         in zip(
             y_true,
             y_pred
         )
-        if a==b
+        if a == b
     )
-    return correct/len(y_true)
+    return correct / len(y_true)
+
+
 print(
     "Accuracy:",
     accuracy_score(
@@ -408,84 +518,87 @@ print(
         y_pred
     )
 )
+
+
 def classification_report(
         y_true,
         y_pred
 ):
-    classes=sorted(
+    classes = sorted(
         set(y_true)
     )
     print(
         "\nClass Precision Recall F1 Support"
     )
     for c in classes:
-        TP=FP=FN=0
-        for true,pred in zip(
+        TP = FP = FN = 0
+        for true, pred in zip(
             y_true,
             y_pred
         ):
-            if true==c and pred==c:
-                TP+=1
-            elif true!=c and pred==c:
-
-                FP+=1
-            elif true==c and pred!=c:
-
-                FN+=1
+            if true == c and pred == c:
+                TP += 1
+            elif true != c and pred == c:
+                FP += 1
+            elif true == c and pred != c:
+                FN += 1
         precision = (
-            TP/(TP+FP)
-            if TP+FP else 0
+            TP / (TP + FP)
+            if TP + FP else 0
         )
         recall = (
-            TP/(TP+FN)
-            if TP+FN else 0
+            TP / (TP + FN)
+            if TP + FN else 0
         )
         f1 = (
-            2*precision*recall/
-            (precision+recall)
-            if precision+recall
+            2 * precision * recall /
+            (precision + recall)
+            if precision + recall
             else 0
         )
-        support=sum(
+        support = sum(
             1
             for x in y_true
-            if x==c
+            if x == c
         )
         print(
             c,
-            round(precision,3),
-            round(recall,3),
-            round(f1,3),
+            round(precision, 3),
+            round(recall, 3),
+            round(f1, 3),
             support
         )
+
+
 classification_report(
     y_test,
     y_pred
 )
+
 # ======================================================
-# 7. PREDICT NEW COMMENT
+# 8. PREDICT NEW COMMENT
 # ======================================================
 while True:
-    text=input(
+    text = input(
         "\nNhập comment (exit để thoát): "
     )
-    if text.lower()=="exit":
+    if text.lower() == "exit":
         break
-    text=clean_text(
+    text = clean_text(
         text
     )
-    vec=vectorizer.transform(
+    vec = vectorizer.transform(
         [text]
     )
-    result=knn.predict(
+    result = knn.predict(
         vec
     )[0]
 
-    if result==0:
+    if result == 0:
         print(
             "Tiêu cực "
         )
-    elif result==1:
+    elif result == 1:
         print(
             "Bình thường"
         )
