@@ -17,27 +17,83 @@ df = df[
 # ======================================================
 # 2. CLEAN TEXT
 # ======================================================
+def handle_negation(text):
+    negative_words = [
+        "không",
+        "chẳng",
+        "chưa",
+        "chả",
+        "dở ",
+        "tệ "
+    ]
+    sentiment_words = [
+        "tốt",
+        "hay",
+        "ngon",
+        "đẹp",
+        "thích",
+        "hài lòng",
+    ]
+    words=text.split()
+    result=[]
+    i=0
+    while i<len(words):
+        if (
+            words[i] in negative_words
+            and i+1<len(words)
+            and words[i+1] in sentiment_words
+        ):
+            result.append(
+                words[i]+"_"+words[i+1]
+            )
+            i+=2
+        else:
+            result.append(words[i])
+            i+=1
+    return " ".join(result)
 def clean_text(text):
+    text = str(text)
+    # lowercase
     text = text.lower()
-    # remove url
+    # emoji
+    emoji_map = {
+        "😀":"emoji_vui",
+        "😂":"emoji_cuoi",
+        "😍":"emoji_yeu_thich",
+        "❤️":"emoji_tim",
+        "😡":"emoji_tuc_gian",
+        "😭":"emoji_buon",
+        "👍":"emoji_thich",
+        "👎":"emoji_khong_thich"
+    }
+    for e, replace in emoji_map.items():
+
+        text = text.replace(
+            e,
+            " " + replace + " "
+        )
+    # URL
     text = re.sub(
-        r"http\S+",
-        "",
+        r"https?://\S+",
+        " ",
         text
     )
-    # giữ tiếng Việt + số
+    # giữ tiếng Việt
     text = re.sub(
-        r"[^a-zA-ZÀ-Ỵà-ỵ0-9\s]",
-        "",
+        r"[^a-zA-ZÀ-ỹ0-9_\s]",
+        " ",
         text
     )
-    # remove space dư
+    # khoảng trắng
     text = re.sub(
         r"\s+",
         " ",
         text
     )
-    return text.strip()
+    text = text.strip()
+    # xử lý phủ định
+    text = handle_negation(text)
+    return text
 df["text"] = df["text"].apply(
     clean_text
 )
@@ -86,6 +142,8 @@ def train_test_split_custom(
         )
         test_idx = idx[:test_count]
         train_idx = idx[test_count:]
+        random.shuffle(train_idx)
+        random.shuffle(test_idx)
     X_train = [
         X[i]
         for i in train_idx
@@ -122,7 +180,7 @@ class MyTfidfVectorizer:
     def __init__(
             self,
             ngram_range=(1,2),
-            max_features=5000
+            max_features=300,
     ):
         self.ngram_range = ngram_range
         self.max_features = max_features
@@ -203,9 +261,9 @@ class MyTfidfVectorizer:
             for word,count in tf.items():
                 if word in self.vocabulary:
                     index = self.vocabulary[word]
+                    tf = count / len(words)
                     vector[index] = (
-                        count *
-                        self.idf[word]
+                            tf * self.idf[word]
                     )
             # L2 normalization
             norm = math.sqrt(
@@ -235,7 +293,7 @@ class MyTfidfVectorizer:
         )
 vectorizer = MyTfidfVectorizer(
     ngram_range=(1,2),
-    max_features=5000
+    max_features=900
 )
 X_train = vectorizer.fit_transform(
     X_train_text
@@ -247,40 +305,42 @@ X_test = vectorizer.transform(
 # 5. KNN
 # ======================================================
 class MyKNNClassifier:
+
     def __init__(
-            self,
-            n_neighbors=5
+        self,
+        n_neighbors=5
     ):
-        self.k=n_neighbors
+        self.k = n_neighbors
     def cosine_similarity(
-            self,
-            a,
-            b
+        self,
+        a,
+        b
     ):
         return sum(
             x*y
             for x,y in zip(a,b)
         )
     def fit(
-            self,
-            X_train,
-            y_train
+        self,
+        X_train,
+        y_train
     ):
-        self.X_train=X_train
-        self.y_train=y_train
+        self.X_train = X_train
+        self.y_train = y_train
         return self
     def predict(
-            self,
-            X_test
+        self,
+        X_test
     ):
-        predictions=[]
+        predictions = []
         for test in X_test:
-            scores=[]
+            scores = []
+            # tính similarity với toàn bộ train data
             for train,label in zip(
                 self.X_train,
                 self.y_train
             ):
-                sim=self.cosine_similarity(
+                sim = self.cosine_similarity(
                     test,
                     train
                 )
@@ -290,25 +350,32 @@ class MyKNNClassifier:
                         label
                     )
                 )
+            # sắp xếp giảm dần theo similarity
             scores.sort(
                 key=lambda x:x[0],
                 reverse=True
             )
-            neighbors=scores[:self.k]
-            labels=[
-                label
-                for _,label
-                in neighbors
-            ]
-            prediction=Counter(
-                labels
-            ).most_common(1)[0][0]
+            # lấy K hàng xóm gần nhất
+            neighbors = scores[:self.k]
+            # ===========================
+            # Weighted voting
+            # ===========================
+            votes = {}
+            for sim,label in neighbors:
+                if label not in votes:
+                    votes[label] = 0
+                votes[label] += sim
+            # chọn label có tổng trọng số lớn nhất
+            prediction = max(
+                votes,
+                key=votes.get
+            )
             predictions.append(
                 prediction
             )
         return predictions
 knn=MyKNNClassifier(
-    n_neighbors=5
+    n_neighbors=9
 )
 knn.fit(
     X_train,
@@ -416,7 +483,7 @@ while True:
 
     if result==0:
         print(
-            "Tiêu cực"
+            "Tiêu cực "
         )
     elif result==1:
         print(
@@ -424,5 +491,5 @@ while True:
         )
     else:
         print(
-            "Tích cực"
+            "Tích cực "
         )
