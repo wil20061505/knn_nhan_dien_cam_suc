@@ -84,7 +84,7 @@ NEGATIVE_WORDS = [
 # match được. Hàm handle_negation bên dưới đã hỗ trợ cụm nhiều từ.
 SENTIMENT_WORDS = [
     "tốt", "hay", "ngon", "đẹp", "thích", "ổn", "chất lượng",
-    "hài lòng", "tuyệt vời", "xuất sắc", "ưng ý"
+    "hài lòng", "tuyệt vời", "xuất sắc", "ưng ý","hả"
 ]
 # Sắp xếp theo số từ giảm dần để ưu tiên khớp cụm dài trước (longest match)
 SENTIMENT_WORDS_SORTED = sorted(
@@ -481,7 +481,7 @@ class MyKNNClassifier:
 
 
 knn = MyKNNClassifier(
-    n_neighbors=9
+    n_neighbors=3
 )
 knn.fit(
     X_train,
