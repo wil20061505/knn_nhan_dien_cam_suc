@@ -76,7 +76,7 @@ def expand_abbreviations(text):
 # BUG FIX: "dở " và "tệ " có khoảng trắng thừa ở cuối nên sau khi
 # text.split() không bao giờ khớp được với từ đơn -> đã bỏ khoảng trắng.
 NEGATIVE_WORDS = [
-    "không", "chẳng", "chưa", "chả", "dở", "tệ", "đừng", "chớ"
+    "địt", "ngu", "đần", "lồn", "cặc", "óc", "chó"
 ]
 
 # BUG FIX: "hài lòng" là cụm 2 từ nhưng so sánh cũ dùng
