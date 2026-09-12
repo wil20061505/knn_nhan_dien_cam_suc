@@ -7,15 +7,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import SpectralClustering, KMeans
-from sklearn.metrics import (
-    silhouette_score,
-    calinski_harabasz_score,
-    davies_bouldin_score
-)
-from sklearn.neighbors import NearestNeighbors
-from sklearn.manifold import SpectralEmbedding
+from scipy.spatial import cKDTree
+from scipy.linalg import eigh
 
 
 # ============================================================
@@ -142,9 +135,9 @@ print(df.head())
 # 3. CHUẨN HÓA DỮ LIỆU
 # ============================================================
 
-scaler = StandardScaler()
-
-X = scaler.fit_transform(df)
+# Chuẩn hóa Z-score bằng NumPy (không dùng scikit-learn)
+X = df.to_numpy(dtype=float)
+X = (X - X.mean(axis=0)) / X.std(axis=0)
 
 print("\nĐã chuẩn hóa dữ liệu.")
 
@@ -159,15 +152,9 @@ print("\nĐang xây dựng Similarity Matrix...")
 n_neighbors = 10
 sigma = 1.0
 
-# Tìm 10 hàng xóm gần nhất
-neighbors = NearestNeighbors(
-    n_neighbors=n_neighbors + 1,
-    metric="euclidean"
-)
-
-neighbors.fit(X)
-
-distances, indices = neighbors.kneighbors(X)
+# Tìm hàng xóm gần nhất bằng SciPy cKDTree
+tree = cKDTree(X)
+distances, indices = tree.query(X, k=n_neighbors + 1)
 
 # Ma trận W
 W = np.zeros((n_customers, n_customers))
@@ -199,37 +186,171 @@ print("\nĐang chạy Spectral Clustering...")
 
 k = 4
 
-spectral = SpectralClustering(
-    n_clusters=k,
-    affinity=W,
-    assign_labels="kmeans",
-    random_state=42,
-    n_init=10
+# ------------------------------------------------------------
+# Spectral Clustering tự cài đặt bằng NumPy + SciPy
+# ------------------------------------------------------------
+def kmeans_numpy(X, n_clusters, random_state=42, n_init=10, max_iter=300):
+    rng_master = np.random.default_rng(random_state)
+    best_labels = None
+    best_inertia = np.inf
+
+    for _ in range(n_init):
+        rng = np.random.default_rng(rng_master.integers(0, 2**32 - 1))
+        centers = X[rng.choice(len(X), n_clusters, replace=False)].copy()
+
+        for _ in range(max_iter):
+            distances = ((X[:, None, :] - centers[None, :, :]) ** 2).sum(axis=2)
+            labels = np.argmin(distances, axis=1)
+
+            new_centers = centers.copy()
+            for c in range(n_clusters):
+                members = X[labels == c]
+                if len(members) > 0:
+                    new_centers[c] = members.mean(axis=0)
+
+            if np.allclose(centers, new_centers, atol=1e-7):
+                centers = new_centers
+                break
+            centers = new_centers
+
+        inertia = ((X - centers[labels]) ** 2).sum()
+        if inertia < best_inertia:
+            best_inertia = inertia
+            best_labels = labels.copy()
+
+    return best_labels
+
+
+def spectral_clustering_numpy(W, n_clusters, random_state=42):
+    # Degree matrix và normalized graph Laplacian
+    degrees = W.sum(axis=1)
+    inv_sqrt_degree = np.zeros_like(degrees)
+    nonzero = degrees > 0
+    inv_sqrt_degree[nonzero] = 1.0 / np.sqrt(degrees[nonzero])
+
+    L_sym = np.eye(len(W)) - (
+        inv_sqrt_degree[:, None] * W * inv_sqrt_degree[None, :]
+    )
+
+    # Lấy k eigenvector ứng với k eigenvalue nhỏ nhất
+    eigenvalues, eigenvectors = eigh(
+        L_sym,
+        subset_by_index=[0, n_clusters - 1]
+    )
+
+    # Chuẩn hóa từng hàng của embedding
+    embedding = eigenvectors
+    row_norms = np.linalg.norm(embedding, axis=1, keepdims=True)
+    embedding = embedding / np.maximum(row_norms, 1e-12)
+
+    labels = kmeans_numpy(
+        embedding,
+        n_clusters=n_clusters,
+        random_state=random_state,
+        n_init=10
+    )
+
+    return labels, embedding, eigenvalues
+
+
+spectral_labels, spectral_embedding, spectral_eigenvalues = (
+    spectral_clustering_numpy(W, k, random_state=42)
 )
 
-spectral_labels = spectral.fit_predict(X)
-
 df["Spectral_Cluster"] = spectral_labels + 1
+
+
+# ============================================================
+# Các chỉ số đánh giá tự cài đặt (không dùng scikit-learn)
+# ============================================================
+
+def pairwise_euclidean(X):
+    sq = np.sum(X * X, axis=1, keepdims=True)
+    distances_sq = sq + sq.T - 2 * X @ X.T
+    return np.sqrt(np.maximum(distances_sq, 0.0))
+
+
+def silhouette_score_numpy(X, labels):
+    D = pairwise_euclidean(X)
+    scores = []
+
+    for i in range(len(X)):
+        same = labels == labels[i]
+        same[i] = False
+
+        if same.sum() == 0:
+            scores.append(0.0)
+            continue
+
+        a = D[i, same].mean()
+        b = np.inf
+
+        for c in np.unique(labels):
+            if c == labels[i]:
+                continue
+            other = labels == c
+            if other.sum():
+                b = min(b, D[i, other].mean())
+
+        scores.append((b - a) / max(a, b, 1e-12))
+
+    return float(np.mean(scores))
+
+
+def calinski_harabasz_numpy(X, labels):
+    overall = X.mean(axis=0)
+    unique_labels = np.unique(labels)
+    n = len(X)
+    k = len(unique_labels)
+
+    between = 0.0
+    within = 0.0
+
+    for c in unique_labels:
+        cluster = X[labels == c]
+        center = cluster.mean(axis=0)
+        between += len(cluster) * np.sum((center - overall) ** 2)
+        within += np.sum((cluster - center) ** 2)
+
+    return float((between / (k - 1)) / max(within / (n - k), 1e-12))
+
+
+def davies_bouldin_numpy(X, labels):
+    unique_labels = np.unique(labels)
+    centers = []
+    scatter = []
+
+    for c in unique_labels:
+        cluster = X[labels == c]
+        center = cluster.mean(axis=0)
+        centers.append(center)
+        scatter.append(np.mean(np.linalg.norm(cluster - center, axis=1)))
+
+    centers = np.asarray(centers)
+    scatter = np.asarray(scatter)
+
+    center_dist = pairwise_euclidean(centers)
+    ratios = np.zeros((len(unique_labels), len(unique_labels)))
+
+    for i in range(len(unique_labels)):
+        for j in range(len(unique_labels)):
+            if i != j:
+                ratios[i, j] = (scatter[i] + scatter[j]) / max(
+                    center_dist[i, j], 1e-12
+                )
+
+    return float(np.mean(np.max(ratios, axis=1)))
 
 
 # ============================================================
 # 6. ĐÁNH GIÁ SPECTRAL CLUSTERING
 # ============================================================
 
-silhouette_spectral = silhouette_score(
-    X,
-    spectral_labels
-)
+silhouette_spectral = silhouette_score_numpy(X, spectral_labels)
 
-calinski_spectral = calinski_harabasz_score(
-    X,
-    spectral_labels
-)
+calinski_spectral = calinski_harabasz_numpy(X, spectral_labels)
 
-davies_spectral = davies_bouldin_score(
-    X,
-    spectral_labels
-)
+davies_spectral = davies_bouldin_numpy(X, spectral_labels)
 
 print("\n====================================")
 print(" KẾT QUẢ SPECTRAL CLUSTERING")
@@ -271,13 +392,8 @@ for cluster, count in cluster_counts.items():
 
 print("\nĐang tạo Spectral Embedding...")
 
-embedding = SpectralEmbedding(
-    n_components=2,
-    affinity=W,
-    random_state=42
-)
-
-X_embedding = embedding.fit_transform(X)
+# Dùng 2 eigenvector đầu tiên của Spectral Clustering để trực quan hóa
+X_embedding = spectral_embedding[:, :2]
 
 
 # ============================================================
@@ -340,29 +456,19 @@ plt.show()
 
 print("\nĐang chạy K-Means...")
 
-kmeans = KMeans(
+kmeans_labels = kmeans_numpy(
+    X,
     n_clusters=4,
     random_state=42,
     n_init=10
 )
 
-kmeans_labels = kmeans.fit_predict(X)
-
 # Đánh giá
-silhouette_kmeans = silhouette_score(
-    X,
-    kmeans_labels
-)
+silhouette_kmeans = silhouette_score_numpy(X, kmeans_labels)
 
-calinski_kmeans = calinski_harabasz_score(
-    X,
-    kmeans_labels
-)
+calinski_kmeans = calinski_harabasz_numpy(X, kmeans_labels)
 
-davies_kmeans = davies_bouldin_score(
-    X,
-    kmeans_labels
-)
+davies_kmeans = davies_bouldin_numpy(X, kmeans_labels)
 
 
 # ============================================================
